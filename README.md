@@ -1,6 +1,6 @@
 # Simple Counters Service
 
-Simple Counters Service is an Apache2 Licensed utility that allows generating sequential numbers via RESTful Api.
+Simple Counters Service is a very simple utility that allows generating sequential numbers via RESTful Api.
 
 ## Example
 
