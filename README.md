@@ -45,7 +45,7 @@ Here, "stack-name" is ... well, name of the stack to instantiate, "eu-west-1" - 
 
 The deployment scripts produces the following artifacts:
 
-1. Cloudformation Stack consisting of DynamoDB table and Rest API
+1. Cloudformation Stack consisting of DynamoDB table and REST Api
 2. Swagger documentation in the clients/[stack-name] folder
 3. Service clients for different platforms in the clients/[stack-name] folder
 
