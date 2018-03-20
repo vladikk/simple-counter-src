@@ -24,7 +24,7 @@ mkdir logs
 
 echo "Deploying cloudformation stack '$stack_name'"
 aws cloudformation deploy \
-	--template-file "src/cloudformation.template" \
+	--template-file "src/cloudformation.yml" \
 	--stack-name "$stack_name" \
 	--capabilities CAPABILITY_IAM \
 	--region "$aws_region" \
@@ -36,7 +36,7 @@ then
   echo "Successfully created/updated the cloudformation stack: '$stack_name'"
 else
   echo "Cloudformation update failed. See '$err_log_path' for details." >&2
-  # exit 1
+  exit 1
 fi
 
 # Reset the clients directory for the current stack
