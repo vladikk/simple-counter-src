@@ -25,7 +25,7 @@ Response:
 
 ## Implementation
 
-The service is implemented by forwarding AWS Api Gateway requests directly to DynamoDB REST Api. Except for some simple Apache Velocity Templates in request and response mapping, no imperative code is needed.
+The service is implemented by forwarding AWS Api Gateway requests directly to DynamoDB REST Api. The direct integration of Api Gateway with DynamoDB eliminates need for writing imperative code; except for some simple Apache Velocity Templates in request and response mapping, no imperative code is needed.
 
 The service and its components are described in the cloudformation template: src/cloudformation.template .
 
