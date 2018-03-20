@@ -1,0 +1,389 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Simple Counters Service
+Parameters: 
+  ReadCapacityUnits:
+    Description: Provisioned read throughput for the DynamoDB table
+    Type: Number
+    Default: '1'
+    MinValue: '1'
+    MaxValue: '10000'
+    ConstraintDescription: must be between 5 and 10000
+  WriteCapacityUnits:
+    Description: Provisioned write throughput for the DynamoDB table
+    Type: Number
+    Default: '1'
+    MinValue: '1'
+    MaxValue: '10000'
+    ConstraintDescription: must be between 5 and 10000
+Resources:
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    DependsOn:
+    - CountersTable
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:PutItem
+            - dynamodb:Query
+            Resource: 
+            - !Join
+              - ''
+              - - 'arn:aws:dynamodb:'
+                - !Ref AWS::Region
+                - ":"
+                - !Ref AWS::AccountId
+                - ":table/"
+                - !Ref CountersTable
+  CountersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Join 
+        - '-'
+        - - !Ref AWS::StackName
+          - "Data"
+      AttributeDefinitions:
+      - AttributeName: counter_id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: counter_id
+        KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: !Ref ReadCapacityUnits
+        WriteCapacityUnits: !Ref WriteCapacityUnits
+  RestApi:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: !Join
+        - '-'
+        - - !Ref AWS::StackName
+          - "API"
+      Description: "Simple Counters Service - Public API"
+  CounterResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: "counter"
+  CounterIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref CounterResource
+      PathPart: "{counterId}"
+  GetCounterValueMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+    - CounterValueModel
+    - ExceptionModel
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref CounterIdResource
+      AuthorizationType: NONE
+      HttpMethod: GET
+      ApiKeyRequired: false
+      RequestParameters:
+        method.request.path.customerId: true
+      MethodResponses:
+      - StatusCode: '200'
+        ResponseModels:
+          application/json: CounterValue
+      - StatusCode: '500'
+        ResponseModels:
+          application/json: Exception
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt ExecutionRole.Arn
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/GetItem"
+        RequestTemplates:
+          application/json: !Join
+            - ''
+            - - "{"
+              - '   "ConsistentRead": false,'
+              - '   "TableName": "'
+              - !Ref CountersTable
+              - '",'
+              - '   "Key": { "counter_id": { "S": "$input.params(''counterId'')"} } ,'
+              - '   "AttributesToGet": [ "counter_id", "counter_value" ] '
+              - "}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            SelectionPattern: '200'
+            ResponseTemplates:
+              application/json: !Join
+                - ''
+                - - '#set($record = $input.path("$.Item")) '
+                  - '#if("$!record" != "") '
+                  - '    #set($counterValue = $record.counter_value.N) '
+                  - '    #set($status = "OK") '
+                  - '#else '
+                  - '    #set($counterValue = 0) '
+                  - '    #set($status = "NOT_INITIALIZED") '
+                  - '#end '
+                  - '{ '
+                  - '    "counter_id": "$input.params().path.get(''counterId'')", '
+                  - '    "counter_value": $counterValue, '
+                  - '    "status": "$status" '    
+                  - '} '
+          - StatusCode: '500'
+            SelectionPattern: ''
+            ResponseTemplates:
+              application/json: !Join
+                - ''
+                - - '{'
+                  - '   "counter_id": "$input.params().path.get(''counterId'')", '
+                  - '   "status": "UNEXPECTED_SERVER_ERROR"'
+                  - '}'
+  IncrementCounterMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+    - CounterStateModel
+    - ExceptionModel
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref CounterIdResource
+      AuthorizationType: NONE
+      HttpMethod: POST
+      ApiKeyRequired: false
+      RequestParameters:
+        method.request.path.customerId: true
+      MethodResponses:
+      - StatusCode: '200'
+        ResponseModels:
+          application/json: CounterState
+      - StatusCode: '400'
+        ResponseModels:
+          application/json: Exception
+      - StatusCode: '500'
+        ResponseModels:
+          application/json: Exception
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt ExecutionRole.Arn
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/UpdateItem"
+        RequestTemplates:
+          application/json: !Join
+            - ''
+            - - "{"
+              - '   "TableName": "'
+              - !Ref CountersTable
+              - '",'
+              - '   "ReturnValues": "UPDATED_NEW", '
+              - '   "Key": { "counter_id": { "S": "$input.params(''counterId'')"} } ,'
+              - '   "UpdateExpression": "set counter_value = counter_value + :step", '
+              - '   "ExpressionAttributeValues": { ":step": { "N": "1"} },'
+              - '   "ConditionExpression": "attribute_exists(counter_id)"'
+              - "}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            SelectionPattern: '200'
+            ResponseTemplates:
+              application/json: !Join
+                - ''
+                - - '#set($record = $input.path("$.Attributes")) '
+                  - '#set($counterValue = $record.counter_value.N) '
+                  - '{ '
+                  - '    "counter_id": "$input.params().path.get(''counterId'')", '
+                  - '    "counter_value": $counterValue, '
+                  - '    "status": "OK" '    
+                  - '} '
+          - StatusCode: '400'
+            SelectionPattern: '400'
+            ResponseTemplates:
+              application/json: !Join
+                - ''
+                - - '#set($error = $input.path("$.__type").toString()) '
+                  - '#if($error.contains("ConditionalCheckFailedException")) '
+                  - '    #set($status = "NOT_INITIALIZED") '
+                  - '#elseif($error.contains("ProvisionedThroughputExceededException")) '
+                  - '    #set($status = "PROVISIONED_THROUGHPUT_EXCEEDED") '
+                  - '#else '
+                  - '  #set($status = "ERROR") '
+                  - '#end '
+                  - '{ '
+                  - '    "counter_id": "$input.params().path.get("counterId")", '
+                  - '    "status": "$status" '
+                  - '}  '
+          - StatusCode: '500'
+            SelectionPattern: ''
+            ResponseTemplates:
+              application/json: !Join
+                - ''
+                - - '{'
+                  - '   "counter_id": "$input.params().path.get(''counterId'')", '
+                  - '   "status": "UNEXPECTED_SERVER_ERROR"'
+                  - '}'
+  InitializeCounterMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+    - CounterStateModel
+    - ExceptionModel
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref CounterIdResource
+      AuthorizationType: NONE
+      HttpMethod: PUT
+      ApiKeyRequired: false
+      RequestParameters:
+        method.request.path.customerId: true
+      MethodResponses:
+      - StatusCode: '200'
+        ResponseModels:
+          application/json: CounterState
+      - StatusCode: '500'
+        ResponseModels:
+          application/json: Exception
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt ExecutionRole.Arn
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/UpdateItem"
+        RequestTemplates:
+          application/json: !Join
+            - ''
+            - - "{"
+              - '   "ReturnValues": "ALL_NEW",'
+              - '   "TableName": "'
+              - !Ref CountersTable
+              - '",'
+              - '   "Key": { "counter_id": { "S": "$input.params(''counterId'')"} } ,'
+              - '   "Attributes": {'
+              - '        "counter_value": { "N": "0" } '
+              - '   }, '
+              - '   "ConditionExpression": "attribute_not_exists(counter_id)", '
+              - '   "UpdateExpression": "set counter_value = :seed", '
+              - '   "ExpressionAttributeValues": { ":seed": { "N": "0"} }'
+              - "}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            SelectionPattern: '[2,4]00'
+            ResponseTemplates:
+              application/json: !Join
+                - ''
+                - - '#set($newRecord = $input.path("$.Attributes")) '
+                  - '#if("$!newRecord" != "") '
+                  - '    #set($status = "OK") '
+                  - '#else '
+                  - '    #set($status = "ALREADY_EXISTS") '
+                  - '#end '
+                  - '{ '
+                  - '   "counter_id": $input.params(''counterId''),'
+                  - '   "status": "$status" '
+                  - "}"
+          - StatusCode: '500'
+            SelectionPattern: ''
+            ResponseTemplates:
+              application/json: !Join
+                - ''
+                - - '{'
+                  - '   "counter_id": "$input.params().path.get(''counterId'')", '
+                  - '   "status": "UNEXPECTED_SERVER_ERROR"'
+                  - '}'
+  CounterValueModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: application/json
+      Name: CounterValue
+      RestApiId: !Ref RestApi
+      Schema: !Join
+        - ''
+        - - '{'
+          - '   "$schema": "http://json-schema.org/draft-04/schema#",'
+          - '   "title": "CounterValue", '
+          - '   "type": "object", '
+          - '   "properties": { '
+          - '     "counter_id": { "type": "string" }, '
+          - '     "counter_value": { "type": "integer" }, '
+          - '     "status": { "type": "string" } '
+          - '   } '
+          - '}'
+  CounterStateModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: application/json
+      Name: CounterState
+      RestApiId: !Ref RestApi
+      Schema: !Join
+        - ''
+        - - '{'
+          - '   "$schema": "http://json-schema.org/draft-04/schema#",'
+          - '   "title": "CounterState", '
+          - '   "type": "object", '
+          - '   "properties": { '
+          - '     "counter_id": { "type": "string" }, '
+          - '     "status": { "type": "string" } '
+          - '   } '
+          - '}'
+  ExceptionModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: application/json
+      Name: Exception
+      RestApiId: !Ref RestApi
+      Schema: !Join
+        - ''
+        - - '{'
+          - '   "$schema": "http://json-schema.org/draft-04/schema#",'
+          - '   "title": "Exception", '
+          - '   "type": "object", '
+          - '   "properties": { '
+          - '     "counter_id": { "type": "string" }, '
+          - '     "status": { "type": "string" }'
+          - '   } '
+          - '}'
+  PublicDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref RestApi
+      StageName: DummyStage
+    DependsOn:
+    - InitializeCounterMethod
+    - IncrementCounterMethod
+    - GetCounterValueMethod
+  PublicStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref PublicDeployment
+      RestApiId: !Ref RestApi
+      StageName: public
+Outputs:
+  ApiId:
+    Description: Rest API Id
+    Value: !Ref RestApi
+  StageName:
+    Description: API Gateway Stage Name
+    Value: !Ref PublicStage
+  PublicUrl:
+    Description: Public URL of the Simple Counters Service
+    Value: !Join
+      - ''
+      - - 'https://'
+        - !Ref RestApi
+        - '.execute-api.'
+        - !Ref AWS::Region
+        - '.amazonaws.com/'
+        - !Ref PublicStage

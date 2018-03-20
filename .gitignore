@@ -1,0 +1,5 @@
+deploy-test.sh
+stress.sh
+clients
+logs
+.DS_Store
