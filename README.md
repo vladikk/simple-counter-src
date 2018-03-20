@@ -8,10 +8,12 @@ Initialize a new counter "test" by issuing a PUT request:
 ```
 curl -XPUT 'https://xxxxxxxxxx.execute-api.eu-west-1.amazonaws.com/public/counter/test'
 ```
-
+Response:
+```
 { "counter_id": test, "status": "OK" }
 
 ```
+
 Increment and get the new value by issuing a POST request:
 curl -XPOST 'https://xxxxxxxxxx.execute-api.eu-west-1.amazonaws.com/public/counter/test'
 ```
